@@ -52,6 +52,10 @@ from saleor.core.utils.events import call_event
 call_event(manager.product_variant_discounted_price_updated, price_info, webhooks=webhooks)
 ```
 
+# Code Style
+
+- Always use top-level imports. Do not use lazy/deferred imports inside function bodies.
+
 # Concurrency and Thread Safety
 
 Saleor runs across many Python services that execute concurrently. Follow these patterns to ensure thread-safe code.
