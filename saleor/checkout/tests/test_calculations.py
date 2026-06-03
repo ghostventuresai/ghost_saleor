@@ -45,8 +45,12 @@ from ..calculations import (
     logger,
 )
 from ..fetch import CheckoutLineInfo, fetch_checkout_info, fetch_checkout_lines
-from ..models import Checkout
-from ..utils import add_promo_code_to_checkout, assign_external_shipping_to_checkout
+from ..models import Checkout, CheckoutMetadata
+from ..utils import (
+    add_promo_code_to_checkout,
+    add_variant_to_checkout,
+    assign_external_shipping_to_checkout,
+)
 
 
 @pytest.fixture
@@ -455,6 +459,127 @@ def test_fetch_checkout_data_flat_rates_and_no_tax_calc_strategy(
     assert checkout.shipping_tax_rate == Decimal("0.2300")
 
 
+def test_fetch_checkout_data_flat_rates_country_exception_charge_taxes_false_with_prices_entered_with_tax_preserves_gross(
+    db,
+    channel_USD,
+    product,
+    address,
+    shipping_method,
+    plugins_manager,
+    settings,
+):
+    # Scenario (merchant on a UK channel shipping to AU):
+    #     channel.prices_entered_with_tax = True
+    #     channel.charge_taxes            = True
+    #     country exception for AU: charge_taxes = False
+    #     TaxClassCountryRate for AU = 10%  (shared with an AU channel that
+    #     legitimately charges VAT, so the row cannot just be removed).
+    #
+    # With one variant at $100 (gross) and shipping at $70 (gross), the
+    # customer must be charged the entered $170.00 — no VAT collected,
+    # but the gross price the merchant entered must be preserved.
+
+    # given — 1) variant priced at $100 gross
+    variant = product.variants.first()
+    variant_listing = variant.channel_listings.get(channel=channel_USD)
+    variant_listing.price_amount = Decimal("100.00")
+    variant_listing.discounted_price_amount = Decimal("100.00")
+    variant_listing.save(update_fields=["price_amount", "discounted_price_amount"])
+
+    # 2) shipping method priced at $70 gross
+    shipping_listing = shipping_method.channel_listings.get(channel=channel_USD)
+    shipping_listing.price_amount = Decimal("70.00")
+    shipping_listing.save(update_fields=["price_amount"])
+
+    # 3) shipping address in AU
+    address.country = "AU"
+    address.save(update_fields=["country"])
+
+    # 4) channel: prices entered with tax, charge taxes by default,
+    #             flat-rate strategy.
+    tc = channel_USD.tax_configuration
+    tc.country_exceptions.all().delete()
+    tc.prices_entered_with_tax = True
+    tc.charge_taxes = True
+    tc.tax_calculation_strategy = TaxCalculationStrategy.FLAT_RATES
+    tc.save(
+        update_fields=[
+            "prices_entered_with_tax",
+            "charge_taxes",
+            "tax_calculation_strategy",
+        ]
+    )
+
+    # 5) country exception for AU: do not charge taxes (this is the customer's
+    #    setting that triggers the bug).
+    tc.country_exceptions.create(
+        country="AU",
+        charge_taxes=False,
+        tax_calculation_strategy=TaxCalculationStrategy.FLAT_RATES,
+    )
+
+    # 6) 10% AU rate on both the product's and the shipping method's tax class
+    #    (this rate exists because the merchant also runs an AU channel that
+    #    legitimately charges 10%; that's why removing the row is not a viable
+    #    workaround). The two tax classes may be the same default object, so
+    #    update_or_create avoids the unique constraint.
+    variant.product.tax_class.country_rates.update_or_create(
+        country="AU", defaults={"rate": Decimal("10")}
+    )
+    shipping_method.tax_class.country_rates.update_or_create(
+        country="AU", defaults={"rate": Decimal("10")}
+    )
+
+    # 7) build a fresh checkout with exactly one line (quantity 1) and one
+    #    shipping method. No compound fixtures: every relevant piece is set
+    #    above so the assertions can be read against the explicit inputs.
+    checkout = Checkout.objects.create(
+        currency=channel_USD.currency_code,
+        channel=channel_USD,
+        price_expiration=timezone.now() + settings.CHECKOUT_PRICES_TTL,
+        email="customer@example.com",
+        shipping_address=address,
+        billing_address=address,
+        shipping_method=shipping_method,
+    )
+    checkout.set_country("AU", commit=True)
+    CheckoutMetadata.objects.create(checkout=checkout)
+
+    checkout_info = fetch_checkout_info(checkout, [], plugins_manager)
+    add_variant_to_checkout(checkout_info, variant, 1)
+    checkout.save()
+
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, plugins_manager)
+
+    # when
+    fetch_checkout_data(
+        checkout_info, plugins_manager, lines, allow_sync_webhooks=False
+    )
+
+    # then
+    checkout.refresh_from_db()
+    line = checkout.lines.get()
+
+    # Tax is zeroed because the AU country exception disables charging.
+    assert line.tax_rate == Decimal("0.0000")
+    assert checkout.shipping_tax_rate == Decimal("0.0000")
+
+    # Net is aligned to gross for both the line and shipping.
+    assert line.total_price_gross_amount == line.total_price_net_amount
+    assert checkout.shipping_price_gross_amount == checkout.shipping_price_net_amount
+
+    # Entered gross is preserved for the line ($100.00) and shipping ($70.00).
+    assert line.total_price_gross_amount == Decimal("100.00")
+    assert line.total_price_net_amount == Decimal("100.00")
+    assert checkout.shipping_price_gross_amount == Decimal("70.00")
+    assert checkout.shipping_price_net_amount == Decimal("70.00")
+
+    # Checkout total matches the entered $170.00 ($100 line + $70 shipping).
+    assert checkout.total_gross_amount == Decimal("170.00")
+    assert checkout.total_net_amount == Decimal("170.00")
+
+
 def test_set_checkout_base_prices_no_charge_taxes_with_voucher(
     checkout_with_item, voucher_percentage
 ):
@@ -639,11 +764,11 @@ def test_fetch_checkout_prices_when_tax_exemption_and_include_taxes_in_prices(
     # then
 
     one_line_total_price = TaxedMoney(
-        net=Money("30.0", currency), gross=Money("30.0", currency)
+        net=Money("36.90", currency), gross=Money("36.90", currency)
     )
     all_lines_total_price = len(lines_info) * one_line_total_price
     shipping_price = TaxedMoney(
-        net=Money("50.0", currency), gross=Money("50.0", currency)
+        net=Money("63.20", currency), gross=Money("63.20", currency)
     )
 
     for line in checkout.lines.all():
