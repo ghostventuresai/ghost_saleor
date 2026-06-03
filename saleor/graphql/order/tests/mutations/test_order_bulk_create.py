@@ -30,6 +30,7 @@ from .....order.models import (
     OrderLine,
 )
 from .....payment import TransactionEventType
+from .....payment.model_helpers import get_undiscounted_subtotal
 from .....payment.models import TransactionEvent, TransactionItem
 from .....warehouse.models import Stock
 from ....core.enums import ErrorPolicyEnum
@@ -755,6 +756,10 @@ def test_order_bulk_create(
     )
     assert db_order.subtotal_gross_amount == expected_order_subtotal_gross
     assert db_order.subtotal_net_amount == expected_order_subtotal_net
+    assert db_order.undiscounted_subtotal == quantize_price(
+        get_undiscounted_subtotal(db_order.lines.all(), db_order.currency),
+        db_order.currency,
+    )
     assert db_order.total_gross_amount == expected_order_total_gross
     assert db_order.total_net_amount == expected_order_total_net
     assert db_order.undiscounted_total_gross_amount == expected_order_total_gross

@@ -23,6 +23,7 @@ from .....checkout.fetch import (
 )
 from .....checkout.models import Checkout, CheckoutDelivery, CheckoutLine
 from .....core.exceptions import InsufficientStock, InsufficientStockData
+from .....core.prices import quantize_price
 from .....core.taxes import TaxError, zero_money, zero_taxed_money
 from .....discount import DiscountType, DiscountValueType, RewardValueType
 from .....discount.models import CheckoutLineDiscount, OrderLineDiscount, Promotion
@@ -35,7 +36,7 @@ from .....payment import ChargeStatus, PaymentError, TransactionKind
 from .....payment.error_codes import PaymentErrorCode
 from .....payment.gateways.dummy_credit_card import TOKEN_VALIDATION_MAPPING
 from .....payment.interface import GatewayResponse
-from .....payment.model_helpers import get_subtotal
+from .....payment.model_helpers import get_subtotal, get_undiscounted_subtotal
 from .....plugins.manager import PluginsManager, get_plugins_manager
 from .....product.models import ProductChannelListing, ProductVariantChannelListing
 from .....shipping.models import ShippingMethod
@@ -44,6 +45,14 @@ from .....warehouse.models import Reservation, Stock, WarehouseClickAndCollectOp
 from .....warehouse.tests.utils import get_available_quantity_for_stock
 from ....core.utils import to_global_id_or_none
 from ....tests.utils import get_graphql_content
+
+
+def _assert_undiscounted_subtotal_matches_lines(order: Order) -> None:
+    assert order.undiscounted_subtotal == quantize_price(
+        get_undiscounted_subtotal(order.lines.all(), order.currency),
+        order.currency,
+    )
+
 
 MUTATION_CHECKOUT_COMPLETE = """
     mutation checkoutComplete(
@@ -275,6 +284,7 @@ def test_checkout_complete(
     assert order.total.gross == total.gross
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.metadata == checkout.metadata_storage.metadata
     assert order.private_metadata == checkout.metadata_storage.private_metadata
@@ -1040,6 +1050,7 @@ def test_checkout_with_voucher_complete(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + discount_amount
@@ -1154,6 +1165,7 @@ def test_checkout_with_order_promotion_complete(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + discount_amount
@@ -1435,6 +1447,7 @@ def test_checkout_with_voucher_complete_product_on_promotion(
     order_line = order.lines.first()
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + (
@@ -1564,6 +1577,7 @@ def test_checkout_with_voucher_on_specific_product_complete(
     order_line = order.lines.first()
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + (
@@ -1679,6 +1693,7 @@ def test_checkout_complete_with_voucher_single_use(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + discount_amount
@@ -1795,6 +1810,7 @@ def test_checkout_complete_with_voucher_paid_with_gift_card_and_payment(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == subtotal + shipping_price + discount_amount
@@ -1911,6 +1927,7 @@ def test_checkout_complete_with_voucher_paid_by_gift_card(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert (
@@ -2037,6 +2054,7 @@ def test_checkout_complete_free_shipping_voucher_and_gift_card(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.shipping_price == zero_taxed_money(order.currency)
@@ -2184,6 +2202,7 @@ def test_checkout_complete_product_on_promotion(
     order_line = order.lines.first()
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + (
@@ -2563,6 +2582,7 @@ def test_checkout_complete_product_on_old_sale(
     order_line = order.lines.first()
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + (
@@ -2741,6 +2761,7 @@ def test_checkout_with_voucher_on_specific_product_complete_with_product_on_prom
     order_line = order.lines.first()
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.total == total
     assert order.undiscounted_total == total + (
@@ -2906,6 +2927,7 @@ def test_checkout_complete_without_inventory_tracking(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
 
     order_line = order.lines.first()
@@ -3854,6 +3876,7 @@ def test_checkout_complete_0_total_value(
     order_line = order.lines.first()
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert checkout_line_quantity == order_line.quantity
     assert checkout_line_variant == order_line.variant
@@ -4272,6 +4295,7 @@ def test_checkout_complete_with_preorder_variant(
 
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.lines.count() == len(variants_and_quantities)
     for variant_id, quantity in variants_and_quantities.items():
@@ -5710,6 +5734,7 @@ def test_checkout_complete_empty_product_translation(
     assert order.total.gross == total.gross
     subtotal = get_subtotal(order.lines.all(), order.currency)
     assert order.subtotal == subtotal
+    _assert_undiscounted_subtotal_matches_lines(order)
     assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
     assert order.metadata == checkout.metadata_storage.metadata
     assert order.private_metadata == checkout.metadata_storage.private_metadata
