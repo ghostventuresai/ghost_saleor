@@ -83,6 +83,7 @@ from ..plugins.dataloaders import plugin_manager_promise_callback
 from ..product.dataloaders import ProductVariantByIdLoader
 from ..shipping.dataloaders import ShippingMethodChannelListingByChannelSlugLoader
 from ..shipping.types import ShippingMethod
+from ..tax.enums import CalculateTaxesDeferIfConditionEnum
 from ..translations import types as translation_types
 from ..warehouse.dataloaders import WarehouseByIdLoader
 from .resolvers import (
@@ -2708,6 +2709,10 @@ def default_channel_filterable_resolver(root, info, channels=None):
     return Observable.from_([root])
 
 
+def calculate_taxes_resolver(root, info, defer_if=None):
+    return Observable.from_([root])
+
+
 channels_argument = graphene.Argument(
     NonNullList(graphene.String),
     description=(
@@ -2862,6 +2867,22 @@ class Subscription(SubscriptionObjectType):
         ),
         channels=channels_argument,
         doc_category=DOC_CATEGORY_ORDERS,
+    )
+
+    calculate_taxes = BaseField(
+        CalculateTaxes,
+        description="Synchronous webhook for calculating checkout/order taxes."
+        + ADDED_IN_322,
+        resolver=calculate_taxes_resolver,
+        defer_if=graphene.Argument(
+            NonNullList(CalculateTaxesDeferIfConditionEnum),
+            description=(
+                "List of conditions under which the webhook delivery should be "
+                "deferred (skipped). If any condition evaluates to true, the "
+                "webhook will not be delivered."
+            ),
+        ),
+        doc_category=DOC_CATEGORY_TAXES,
     )
 
     checkout_created = BaseField(
